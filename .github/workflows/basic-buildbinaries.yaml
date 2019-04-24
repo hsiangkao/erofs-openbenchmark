@@ -1,0 +1,167 @@
+name: basic-buildbinaries
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  # Allows to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'Kernel Git Repository'
+        default: 'git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs.git'
+        required: true
+        type: string
+      kernel_branch:
+        description: 'Kernel Git Branch'
+        default: 'dev-test'
+        required: true
+        type: string
+      utils_repo:
+        description: 'erofs-utils Git Repository'
+        default: 'git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git'
+        required: true
+        type: string
+      utils_branch:
+        description: 'erofs-utils Git Branch'
+        default: 'experimental'
+        required: true
+        type: string
+      squashfs_tools_branch:
+        description: 'squashfs-tools Git Branch'
+        default: 'master'
+        required: true
+        type: string
+
+env:
+  LZ4_VER: 1.10.0
+  XZ_VER: 5.6.4
+  KERNEL_REPO: ${{ github.event_name == 'schedule' && 'git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs.git' || github.event.inputs.kernel_repo }}
+  KERNEL_BRANCH: ${{ github.event_name == 'schedule' && 'dev-test' || github.event.inputs.kernel_branch }}
+  UTILS_REPO: ${{ github.event_name == 'schedule' && 'git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git' || github.event.inputs.utils_repo }}
+  UTILS_BRANCH: ${{ github.event_name == 'schedule' && 'experimental' || github.event.inputs.utils_branch }}
+  SQUASHFS_TOOLS_REPO: https://github.com/plougher/squashfs-tools.git
+  SQUASHFS_TOOLS_BRANCH: ${{ github.event_name == 'schedule' && 'master' || github.event.inputs.squashfs_tools_branch }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the HEAD commit ID
+        id: get_version_id
+        run: |
+          while true; do
+            COMMIT=`git ls-remote "$KERNEL_REPO" "$KERNEL_BRANCH" | cut -c1-12`
+            [ "x$COMMIT" = "x" ] || break
+          done
+          echo "scm_version=$COMMIT" >> $GITHUB_OUTPUT
+      - name: Cache bzImage
+        id: cache-bzImage
+        uses: actions/cache@v4
+        with:
+          path: |
+            erofs/arch/x86/boot/bzImage
+          key: bzImage-${{ steps.get_version_id.outputs.scm_version }}
+      - name: Clone latest tree
+        if: steps.cache-bzImage.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -rf erofs; mkdir -p erofs
+          git clone $KERNEL_REPO -n --no-tags erofs
+          (cd erofs; git checkout ${{ steps.get_version_id.outputs.scm_version }}; rm -rf .git)
+      - name: Build the kernel
+        if: steps.cache-bzImage.outputs.cache-hit != 'true'
+        run: |
+          sudo apt -qq update
+          sudo apt install -y libssl-dev libelf-dev flex bison dwarves bc
+          cd erofs
+          scripts/kconfig/merge_config.sh -m arch/x86/configs/x86_64_defconfig ../bench-kconfig && \
+            make olddefconfig && make -j12
+      - name: Upload bzImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: erofs-bzImage
+          path: |
+            erofs/arch/x86/boot/bzImage
+
+  build-erofs-utils:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build erofs-utils
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y autoconf automake libtool pkg-config libfuse-dev libselinux1-dev libzstd-dev uuid-dev liblzma-dev
+          curl -L https://github.com/lz4/lz4/releases/download/v$LZ4_VER/lz4-$LZ4_VER.tar.gz | tar -zxv
+          (cd lz4-$LZ4_VER; make BUILD_STATIC=no; sudo make install BUILD_STATIC=no)
+          rm -rf erofs-utils; mkdir -p erofs-utils
+          git clone $UTILS_REPO -b $UTILS_BRANCH erofs-utils
+          cd erofs-utils
+          mkdir output
+          ./autogen.sh && ./configure --enable-debug --enable-werror --enable-fuse \
+              --enable-lz4 --enable-lzma --with-selinux --with-libzstd \
+              --enable-multithreading \
+              --prefix=$(pwd)/output && \
+              make && make install
+      - name: Upload erofs-utils
+        uses: actions/upload-artifact@v4
+        with:
+          name: erofs-utils-mt
+          path: |
+            erofs-utils/output
+
+  build-squashfs-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build squashfs-tools
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y libselinux1-dev libzstd-dev zlib1g-dev liblzma-dev
+          curl -L https://github.com/lz4/lz4/releases/download/v$LZ4_VER/lz4-$LZ4_VER.tar.gz | tar -zxv
+          (cd lz4-$LZ4_VER; make BUILD_STATIC=no; sudo make install BUILD_STATIC=no)
+          rm -rf squashfs-tools; mkdir squashfs-tools
+          git clone -n $SQUASHFS_TOOLS_REPO squashfs-tools
+          (cd squashfs-tools; git checkout $SQUASHFS_TOOLS_BRANCH; mkdir output)
+          (cd squashfs-tools/squashfs-tools; CONFIG=1 LZO_SUPPORT=0 make)
+          cp -f squashfs-tools/squashfs-tools/{mk,un}squashfs squashfs-tools/output
+      - name: Upload squashfs-tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: squashfs-tools
+          path: |
+            squashfs-tools/output
+
+  build-vmrootfs:
+    runs-on: ubuntu-24.04
+    needs: build-erofs-utils
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache VM rootfs images
+        id: cache-vmrootfs
+        uses: actions/cache@v4
+        with:
+          path: |
+            .output/vmrootfs.erofs
+          key: benchrootfs-${{hashFiles('bench-packages', 'bench-overlay', 'scripts/genrootfs')}}
+      - name: Download erofs-utils prebuilts
+        if: steps.cache-vmrootfs.outputs.cache-hit != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: erofs-utils-mt
+      - name: Generate VM rootfs
+        if: steps.cache-vmrootfs.outputs.cache-hit != 'true'
+        run: |
+          chmod +x bin/mkfs.erofs bin/fsck.erofs
+          sudo apt-get -qq update
+          sudo ./genbenchrootfs.sh
+
+      - name: Upload VM rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: erofs-vmrootfs
+          path: |
+            .output/vmrootfs.erofs
