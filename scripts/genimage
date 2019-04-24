@@ -1,0 +1,13 @@
+#!/bin/sh -e
+
+FSTYP="$1"
+OUTPUT_IMG="$2"
+INPUTDIR="$3"
+
+shift 3
+case "$FSTYP" in
+	"erofs")
+		mkfs.erofs --quiet $* $OUTPUT_IMG $INPUTDIR || exit 1;;
+	"squashfs")
+		mksquashfs $INPUTDIR $OUTPUT_IMG -noappend $* > /dev/null || exit 1;;
+esac
