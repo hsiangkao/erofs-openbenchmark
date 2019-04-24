@@ -1,0 +1,51 @@
+name: vmbench
+
+on:
+  schedule:
+    - cron:  '0 0,8,16 * * *'
+  # Allows to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  qemu-run:
+    runs-on: ubuntu-latest
+    steps:
+     - uses: actions/checkout@v4
+     - name: Download erofs-utils
+       uses: actions/github-script@v6
+       env:
+         WORKFLOW_FILENAME: build-binaries.yml
+         ARTIFACT_NAME: erofs-utils-mt
+         ARTIFACT_FILENAME: erofs-utils-mt.zip
+         UNZIP_DIR: bin
+       with:
+         script: |
+           const script = require('./scripts/download-previous-artifact.js')
+           await script({github, context, core})
+     - name: Download squashfs-tools
+       uses: actions/github-script@v6
+       env:
+         WORKFLOW_FILENAME: build-binaries.yml
+         ARTIFACT_NAME: squashfs-tools
+         ARTIFACT_FILENAME: squashfs-tools.zip
+         UNZIP_DIR: bin
+       with:
+         script: |
+           const script = require('./scripts/download-previous-artifact.js')
+           await script({github, context, core})
+     - name: Download bzImage
+       uses: actions/github-script@v6
+       env:
+         WORKFLOW_FILENAME: build-binaries.yml
+         ARTIFACT_NAME: erofs-bzImage 
+         ARTIFACT_FILENAME: erofs-bzImage.zip
+         UNZIP_DIR: boot
+       with:
+         script: |
+           const script = require('./scripts/download-previous-artifact.js')
+           await script({github, context, core})
+
