@@ -94,7 +94,7 @@ jobs:
       - name: Build erofs-utils
         run: |
           sudo apt-get -qq update
-          sudo apt-get install -y autoconf automake libtool pkg-config libfuse-dev libselinux1-dev libzstd-dev uuid-dev liblzma-dev
+          sudo apt-get install -y autoconf automake libtool pkg-config libfuse-dev libselinux1-dev libzstd-dev uuid-dev liblzma-dev libcurl4-openssl-dev libjson-c-dev
           curl -L https://github.com/lz4/lz4/releases/download/v$LZ4_VER/lz4-$LZ4_VER.tar.gz | tar -zxv
           (cd lz4-$LZ4_VER; make BUILD_STATIC=no; sudo make install BUILD_STATIC=no)
           rm -rf erofs-utils; mkdir -p erofs-utils
@@ -103,7 +103,7 @@ jobs:
           mkdir output
           ./autogen.sh && ./configure --enable-debug --enable-werror --enable-fuse \
               --enable-lz4 --enable-lzma --with-selinux --with-libzstd \
-              --enable-multithreading \
+              --enable-multithreading --enable-oci \
               --prefix=$(pwd)/output && \
               make && make install
       - name: Upload erofs-utils
