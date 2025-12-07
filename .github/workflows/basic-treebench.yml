@@ -1,8 +1,6 @@
 name: basic-treebench
 
 on:
-  schedule:
-    - cron:  '0 0,8,16 * * *'
   # Allows to run this workflow manually from the Actions tab
   workflow_dispatch:
 
@@ -132,6 +130,7 @@ jobs:
              done
            done
          done
+         cat matrix.log
      - name: Generate JSON results
        run: |
          OUTPUT="benchtree-${{ matrix.dataset }}.json"
@@ -144,6 +143,7 @@ jobs:
          cat matrix.log | sed '2~1 s/^/,/' >> $OUTPUT
          echo "]}" >> $OUTPUT
          cat $OUTPUT | jq -c > $OUTPUT
+         cat $OUTPUT
      - name: Upload JSON results
        uses: actions/upload-artifact@v4
        with:

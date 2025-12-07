@@ -107,6 +107,7 @@ jobs:
              done
            done
          done
+         cat matrix.log
      - name: Generate JSON results
        run: |
          OUTPUT="benchtree-perf-${{ matrix.dataset }}.json"
@@ -119,6 +120,7 @@ jobs:
          cat matrix.log | sed '2~1 s/^/,/' >> $OUTPUT
          echo "]}" >> $OUTPUT
          cat $OUTPUT | jq -c > $OUTPUT
+         cat $OUTPUT
      - name: Upload JSON results
        uses: actions/upload-artifact@v4
        with:
