@@ -1,0 +1,125 @@
+name: basic-treebench-perf
+
+on:
+  # Allows to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  qemu-run:
+    strategy:
+      matrix:
+       dataset: [silesia]
+    runs-on: ubuntu-latest
+    steps:
+     - uses: actions/checkout@v4
+     - name: Download erofs-utils
+       uses: actions/github-script@v6
+       env:
+         WORKFLOW_FILENAME: basic-buildbinaries.yaml
+         ARTIFACT_NAME: erofs-utils-mt
+         ARTIFACT_FILENAME: erofs-utils-mt.zip
+         UNZIP_DIR: .
+       with:
+         script: |
+           const script = require('./scripts/download-previous-artifact.js')
+           await script({github, context, core})
+     - name: Download bzImage
+       uses: actions/github-script@v6
+       env:
+         WORKFLOW_FILENAME: basic-buildbinaries.yaml
+         ARTIFACT_NAME: erofs-bzImage
+         ARTIFACT_FILENAME: erofs-bzImage.zip
+         UNZIP_DIR: boot
+       with:
+         script: |
+           const script = require('./scripts/download-previous-artifact.js')
+           await script({github, context, core})
+     - name: Download VM rootfs
+       uses: actions/github-script@v6
+       env:
+         WORKFLOW_FILENAME: basic-buildbinaries.yaml
+         ARTIFACT_NAME: erofs-vmrootfs
+         ARTIFACT_FILENAME: erofs-vmrootfs.zip
+         UNZIP_DIR: boot
+       with:
+         script: |
+           const script = require('./scripts/download-previous-artifact.js')
+           await script({github, context, core})
+     - name: Set up permissions
+       run: |
+         chmod +x bin/*
+         echo "PATH=$(pwd)/bin:$PATH" >> $GITHUB_ENV
+
+     - name: Configure QEMU and KVM
+       run: |
+         sudo apt-get update -qq
+         sudo apt-get install -y qemu-kvm
+         sudo usermod -a -G kvm "${USER}"
+         # Only configure kvm perms if kvm is available
+         if [[ -e /dev/kvm ]]; then
+           echo "Updating KVM permissions"
+           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+           sudo udevadm control --reload-rules
+           sudo udevadm trigger --name-match=kvm
+         fi
+     - name: Benchmark in QEMU
+       env:
+         fstyps: '["ext4", "erofs"]'
+         algs: '["nil", "lz4", "lz4hc,12", "lzma,6", "deflate,9", "zstd"]'
+         clustersizes: '[4096, 16384, 65536, 131072, 1048576]'
+       run: |
+         algs=( ${{ join(fromJSON(env.algs), ' ') }} )
+         fstyps=( ${{ join(fromJSON(env.fstyps), ' ') }} )
+         clustersizes=( ${{ join(fromJSON(env.clustersizes), ' ') }} )
+         for alg in "${algs[@]}"; do
+           clevel="$(echo $alg | cut -d',' -s -f2)"
+           alg="$(echo $alg | cut -d',' -f1)"
+           for fs in "${fstyps[@]}"; do
+             [ x"$fs" = "xext4" -a x"$alg" != "xnil" ] && continue
+             for cs in "${clustersizes[@]}"; do
+               rm -rf .output; mkdir -p .output
+               args=""
+               if [ "$fs" = "erofs" ]; then
+                 if [ x"$alg" != "xnil" ]; then
+                   xalg="$alg"; [ x"$clevel" != "x" ] && xalg="${alg},${clevel}"
+                   args="-z$xalg -C$cs -E48bit,dot-omitted"
+                 else
+                   args="-E^inline_data,48bit,dot-omitted"
+                 fi
+               fi
+               VARS="$(./"${{ matrix.dataset }}"_gen.sh "$fs" ".output/test.$fs" $args)"
+               ./qemubench-run.sh boot/bzImage boot/vmrootfs.erofs ".output/test.$fs" "$fs" ".output/" "/root/benchtree.sh /mnt/test /mnt/log/benchtree"
+               rm -f .output/test."$fs"
+               SIZE=$(echo "$VARS" | grep "^SIZE=" | cut -d'=' -f2)
+               CTIME=$(echo "$VARS" | grep "^SECS=" | cut -d'=' -f2)
+               SEQR=$(cat .output/benchtree | jq .results[0].mean)
+               SEQM=$(cat .output/benchtree | jq .results[1].mean)
+               RANDR=$(cat .output/benchtree | jq .results[2].mean)
+               RANDM=$(cat .output/benchtree | jq .results[3].mean)
+               echo "{\"alg\": \"$alg\", \"fs\": \"$fs\", \"clustersize\": $cs, \"mkfsopts\": \"$args\", \"size\": $SIZE, \"generation_time\": $CTIME, \"time\": [$SEQR, $SEQM, $RANDR, $RANDM]}" | tee -a matrix.log
+               [ x"$alg" != "xnil" ] || break
+             done
+           done
+         done
+     - name: Generate JSON results
+       run: |
+         OUTPUT="benchtree-perf-${{ matrix.dataset }}.json"
+         echo "{ \"testdata\": \"${{ matrix.dataset }}\"," >> $OUTPUT
+         echo "\"runid\": ${GITHUB_RUN_ID}," >> $OUTPUT
+         echo "\"time\": \"$(date -R)\"," >> $OUTPUT
+         CPU="$(cat /proc/cpuinfo | grep '^model name' | cut -d':' -f2 | head -n1)"
+         echo "\"cpu\": \"$CPU\"," >> $OUTPUT
+         echo "\"results\": [" >> $OUTPUT
+         cat matrix.log | sed '2~1 s/^/,/' >> $OUTPUT
+         echo "]}" >> $OUTPUT
+         { rm $OUTPUT; jq -c > $OUTPUT } < $OUTPUT
+     - name: Upload JSON results
+       uses: actions/upload-artifact@v4
+       with:
+         name: benchtree-perf-${{ matrix.dataset }}
+         path: |
+           benchtree-perf-${{ matrix.dataset }}.json

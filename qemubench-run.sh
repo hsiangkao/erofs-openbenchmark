@@ -21,7 +21,9 @@ fallocate -l 11g logdev.ext4 && mkfs.ext4 -O ^has_journal,^uninit_bg,^ext_attr,^
 sync
 qemu-system-x86_64 -nographic -serial mon:stdio -m $mem -smp $cpus $kvm -kernel "$KERNEL" \
 	-drive file="$VMROOTFS",index=0,readonly=on,media=cdrom \
-	-hdb logdev.ext4 -hdc "$TESTDEV" -net nic,model=e1000 -net user \
+	-hdb logdev.ext4 \
+	-drive file=$TESTDEV,aio=native,cache=none,media=disk \
+	-net nic,model=e1000 -net user \
 	-append "net.ifnames=0 root=/dev/sr0 console=ttyS0 qemubench.fstyp=$FSTYP qemubench.cmd='$TESTCMDS'"
 
 (mkdir -p mnt && sudo mount -o loop logdev.ext4 mnt && find mnt -maxdepth 1 -type f -exec cp '{}' $OUTDIR \; && sudo umount mnt)

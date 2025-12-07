@@ -10,4 +10,8 @@ case "$FSTYP" in
 		mkfs.erofs --quiet $* $OUTPUT_IMG $INPUTDIR || exit 1;;
 	"squashfs")
 		mksquashfs $INPUTDIR $OUTPUT_IMG -noappend $* > /dev/null || exit 1;;
+	"ext4")
+		totalsize=$(du -bs $INPUTDIR|cut -f1)
+		truncate -s$((totalsize+1024*1024*1024)) $OUTPUT_IMG
+		mkfs.ext4 -O^has_journal -d$INPUTDIR $OUTPUT_IMG > /dev/null 2>&1 || exit 1;;
 esac
