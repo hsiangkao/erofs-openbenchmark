@@ -1,0 +1,91 @@
+name: containerd-image-unpacking-bench
+
+on:
+  # Allows to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  top20-dockerhub-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+      - uses: actions/checkout@v6
+      - name: Download erofs-utils
+        uses: actions/github-script@v8
+        env:
+          WORKFLOW_FILENAME: basic-buildbinaries.yml
+          ARTIFACT_NAME: erofs-utils-mt
+          ARTIFACT_FILENAME: erofs-utils-mt.zip
+          UNZIP_DIR: .
+        with:
+          script: |
+            const script = require('./scripts/download-previous-artifact.js')
+            await script({github, context, core})
+      - name: Install the target containerd and nerdctl version
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y containerd erofs-utils hyperfine
+          # download the target containerd version
+          curl -L https://github.com/containerd/containerd/releases/download/v2.2.1/containerd-2.2.1-linux-amd64.tar.gz | sudo tar -xzf -
+          curl -L https://github.com/containerd/nerdctl/releases/download/v2.2.1/nerdctl-2.2.1-linux-amd64.tar.gz | sudo tar -C bin/ -xzf -
+          sudo systemctl stop containerd.service
+          sudo chmod -R +x bin/.
+          sudo cp -rf bin/. /usr/bin
+          sudo cp -f containerd/config-overlayfs.toml /etc/containerd/config.toml
+          sudo cp -rf containerd/certs.d /etc/containerd/.
+          sudo mkdir -p /opt/cni/bin
+          curl -L https://github.com/containernetworking/plugins/releases/download/v1.9.0/cni-plugins-linux-amd64-v1.9.0.tgz | sudo tar -C /opt/cni/bin -xzf -
+          sudo systemctl start containerd
+          sudo chmod u+s /usr/bin/nerdctl
+      - name: Cache /opt/registry
+        id: cache-registry
+        uses: actions/cache@v4
+        with:
+          key: registry-images-${{ runner.os }}-${{ hashFiles('./TOP25_DOCKER_IMAGES.TXT', './download_docker_images.sh') }}
+          path: |
+            /opt/registry
+      - name: Launch local registry
+        run: |
+          nerdctl run -dq --net host --restart=always -p 5000:5000 -v /opt/registry:/var/lib/registry registry:3
+      - if: ${{ steps.cache-registry.outputs.cache-hit != 'true' }}
+        name: Download docker images for local benchmarking
+        run: |
+          sudo ./download_docker_images.sh localhost:5000 TOP25_DOCKER_IMAGES.TXT
+      - name: Benchmark OverlayFS snapshotter
+        run: |
+          sync; sleep 3
+          sudo ./unpackbench.sh localhost:5000 TOP25_DOCKER_IMAGES.TXT results-overlay.json overlayfs
+      - name: Benchmark EROFS snapshotter
+        run: |
+          sudo cp -f containerd/config-erofs.toml /etc/containerd/config.toml
+          sudo modprobe erofs
+          sudo systemctl restart containerd
+          while ! curl -Is -o/dev/null http://localhost:5000; do :; done
+          sync; sleep 3
+          sudo ./unpackbench.sh localhost:5000 TOP25_DOCKER_IMAGES.TXT results-erofs.json erofs
+      - name: Generate bar charts
+        run: |
+          pip3 install -q matplotlib
+          python3 unpackbench_figgen.py results-erofs.json results-overlay.json results.svg
+          python3 unpackbench_figgen.py results-erofs.json results-overlay.json results.png
+      - name: Upload results
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.job }}
+          path: |
+            results-*.json
+            results.svg
+            results.png

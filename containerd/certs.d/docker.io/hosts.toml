@@ -1,0 +1,6 @@
+server = "https://registry-1.docker.io"
+
+[host."https://mirror.gcr.io"]
+  capabilities = ["pull", "resolve", "push"]
+[host."https://public.ecr.aws/docker"]
+  capabilities = ["pull", "resolve", "push"]
