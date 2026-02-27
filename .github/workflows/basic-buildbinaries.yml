@@ -1,0 +1,55 @@
+name: basic-buildbinaries
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  # Allows to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      utils_repo:
+        description: 'erofs-utils Git Repository'
+        default: 'git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git'
+        required: true
+        type: string
+      utils_branch:
+        description: 'erofs-utils Git Branch'
+        default: 'experimental'
+        required: true
+        type: string
+
+env:
+  LZ4_VER: 1.10.0
+  XZ_VER: 5.6.4
+  UTILS_REPO: ${{ github.event_name == 'schedule' && 'git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git' || github.event.inputs.utils_repo }}
+  UTILS_BRANCH: ${{ github.event_name == 'schedule' && 'experimental' || github.event.inputs.utils_branch }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-erofs-utils:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build erofs-utils
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get install -y autoconf automake libtool pkg-config libfuse-dev libselinux1-dev libzstd-dev uuid-dev liblzma-dev
+          curl -L https://github.com/lz4/lz4/releases/download/v$LZ4_VER/lz4-$LZ4_VER.tar.gz | tar -zxv
+          (cd lz4-$LZ4_VER; make BUILD_STATIC=no; sudo make install BUILD_STATIC=no)
+          rm -rf erofs-utils; mkdir -p erofs-utils
+          git clone $UTILS_REPO -b $UTILS_BRANCH erofs-utils
+          cd erofs-utils
+          mkdir output
+          ./autogen.sh && ./configure --enable-debug --enable-werror --enable-fuse \
+              --enable-lz4 --enable-lzma --with-selinux --with-libzstd \
+              --enable-multithreading \
+              --prefix=$(pwd)/output && \
+              make && make install
+      - name: Upload erofs-utils
+        uses: actions/upload-artifact@v6
+        with:
+          name: erofs-utils-mt
+          path: |
+            erofs-utils/output
