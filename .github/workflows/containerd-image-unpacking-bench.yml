@@ -9,8 +9,13 @@ defaults:
     shell: bash
 
 jobs:
-  top20-dockerhub-images:
+  bench-docker-images:
+    strategy:
+     matrix:
+       set: [TOP25, AI]
     runs-on: ubuntu-latest
+    env:
+       TESTIMAGE_LIST: ./${{ matrix.set }}_DOCKER_IMAGES.TXT
     steps:
       - uses: endersonmenezes/free-disk-space@v3
         with:
@@ -50,11 +55,11 @@ jobs:
           curl -L https://github.com/containernetworking/plugins/releases/download/v1.9.0/cni-plugins-linux-amd64-v1.9.0.tgz | sudo tar -C /opt/cni/bin -xzf -
           sudo systemctl start containerd
           sudo chmod u+s /usr/bin/nerdctl
-      - name: Cache /opt/registry
-        id: cache-registry
-        uses: actions/cache@v4
+      - name: Restore cached `/opt/registry`
+        id: cache-registry-restore
+        uses: actions/cache/restore@v5
         with:
-          key: registry-images-${{ runner.os }}-${{ hashFiles('./TOP25_DOCKER_IMAGES.TXT', './download_docker_images.sh') }}
+          key: registry-images-${{ runner.os }}-${{ hashFiles(env.TESTIMAGE_LIST, './download_docker_images.sh') }}
           path: |
             /opt/registry
       - name: Launch local registry
@@ -63,11 +68,11 @@ jobs:
       - if: ${{ steps.cache-registry.outputs.cache-hit != 'true' }}
         name: Download docker images for local benchmarking
         run: |
-          sudo ./download_docker_images.sh localhost:5000 TOP25_DOCKER_IMAGES.TXT
+          sudo ./download_docker_images.sh localhost:5000 "${TESTIMAGE_LIST}"
       - name: Benchmark OverlayFS snapshotter
         run: |
           sync; sleep 3
-          sudo ./unpackbench.sh localhost:5000 TOP25_DOCKER_IMAGES.TXT results-overlay.json overlayfs
+          sudo ./unpackbench.sh localhost:5000 "${TESTIMAGE_LIST}" results-overlay.json overlayfs
       - name: Benchmark EROFS snapshotter
         run: |
           sudo cp -f containerd/config-erofs.toml /etc/containerd/config.toml
@@ -75,7 +80,7 @@ jobs:
           sudo systemctl restart containerd
           while ! curl -Is -o/dev/null http://localhost:5000; do :; done
           sync; sleep 3
-          sudo ./unpackbench.sh localhost:5000 TOP25_DOCKER_IMAGES.TXT results-erofs.json erofs
+          sudo ./unpackbench.sh localhost:5000 "${TESTIMAGE_LIST}" results-erofs.json erofs
       - name: Generate bar charts
         run: |
           pip3 install -q matplotlib
@@ -84,8 +89,24 @@ jobs:
       - name: Upload results
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ github.job }}
+          name: ${{ github.job }}-${{ matrix.set }}
           path: |
             results-*.json
             results.svg
             results.png
+      - name: Calculate `/opt/registry` directory size (in MiB)
+        id: calculate_registry_dir_size
+        run: |
+          REGISTRY_SIZE_MB=$(du -ms /opt/registry | cut -f1)
+          echo "Directory size is $REGISTRY_SIZE_MB MB"
+          # Set the size as a step output
+          echo "size=$REGISTRY_SIZE_MB" >> $GITHUB_OUTPUT
+        shell: bash
+      - if: steps.calculate_registry_dir_size.outputs.size <= 20480
+        name: Save `/opt/registry`
+        id: cache-registry-save
+        uses: actions/cache/save@v5
+        with:
+          key: registry-images-${{ runner.os }}-${{ hashFiles(env.TESTIMAGE_LIST, './download_docker_images.sh') }}
+          path: |
+            /opt/registry
